@@ -120,6 +120,12 @@ EOF"
         echo "============================================"
         ;;
 
+    test-notify)
+        echo "[+] Sending test notification to Android system..."
+        run_root "su 2000 -c 'cmd notification post -i @android:drawable/stat_sys_battery_charge -S bigtext -t \"⚡ Bypass Guard Test\" OP8T_BYPASS_GUARD \"Notifications are working properly! (Battery: \$(cat /sys/class/power_supply/battery/capacity)%)\"'"
+        echo "[✔] Test notification posted! Check your notification drawer."
+        ;;
+
     status|"")
         PID=$(check_daemon_running)
         MMI_VAL=$(run_root "cat $MMI_NODE 2>/dev/null")
@@ -127,9 +133,22 @@ EOF"
         CURRENT=$(run_root "cat /sys/class/power_supply/battery/current_now 2>/dev/null")
         VOLT=$(run_root "cat /sys/class/power_supply/battery/voltage_now 2>/dev/null")
         LEVEL=$(run_root "cat /sys/class/power_supply/battery/capacity 2>/dev/null")
-        USB=$(run_root "cat /sys/class/power_supply/usb/online 2>/dev/null")
         TEMP_RAW=$(run_root "cat /sys/class/power_supply/battery/temp 2>/dev/null")
         STATE=$(run_root "cat '$STATE_FILE' 2>/dev/null || echo 'UNKNOWN'")
+
+        AC=$(run_root "cat /sys/class/power_supply/ac/online 2>/dev/null || echo 0")
+        USB=$(run_root "cat /sys/class/power_supply/usb/online 2>/dev/null || echo 0")
+        PC=$(run_root "cat /sys/class/power_supply/pc_port/online 2>/dev/null || echo 0")
+
+        if [ "$AC" = "1" ]; then
+            PWR_TYPE="Connected (AC Adapter / Fast Charger)"
+        elif [ "$USB" = "1" ]; then
+            PWR_TYPE="Connected (USB Port)"
+        elif [ "$PC" = "1" ]; then
+            PWR_TYPE="Connected (PC Port)"
+        else
+            PWR_TYPE="Disconnected (On Battery)"
+        fi
 
         # Load thresholds
         HIGH_THRESHOLD=80
@@ -165,7 +184,7 @@ EOF"
         echo "--------------------------------------------------"
         echo " Battery Level      : ${LEVEL}%"
         echo " Battery Status     : ${STATUS}"
-        echo " USB Connected      : $([ "$USB" = "1" ] && echo 'Yes' || echo 'No')"
+        echo " Power Source       : ${PWR_TYPE}"
         echo " Battery Current    : ${CURRENT_MA} mA (${CURRENT} µA)"
         echo " Battery Voltage    : ${VOLT_V} V"
         echo " Battery Temp       : ${TEMP_C} °C"
@@ -177,12 +196,13 @@ EOF"
         echo "  bypass on         -> Manually force bypass mode on"
         echo "  bypass off        -> Manually restore normal charging"
         echo "  bypass set <H> <L>-> Change thresholds (e.g., bypass set 80 40)"
+        echo "  bypass test-notify-> Send a test notification to verify display"
         echo "  bypass log        -> View recent daemon log activity"
         echo "=================================================="
         ;;
 
     help|--help|-h)
-        echo "Usage: bypass [start|stop|restart|status|on|off|set|log]"
+        echo "Usage: bypass [start|stop|restart|status|on|off|set|test-notify|log]"
         ;;
 
     *)

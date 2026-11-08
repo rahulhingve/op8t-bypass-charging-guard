@@ -6,10 +6,14 @@
 # PMIC: Qualcomm PM8150B (NVDC Architecture)
 # Driver Node: /sys/class/oplus_chg/battery/mmi_charging_enable
 #
+# Power Detection: Checks AC Adapter (/sys/class/power_supply/ac/online),
+#                  USB Port (/sys/class/power_supply/usb/online), and
+#                  PC Port (/sys/class/power_supply/pc_port/online).
+#
 # Smart Cycle:
-#   - Cable connected + Battery >= 80% -> Enable Bypass (phone runs on cable power)
-#   - Cable connected + Battery <= 40% -> Resume Charging (charges back up to 80%)
-#   - Cable disconnected               -> Restore stock charging node
+#   - Power connected + Battery >= 80% -> Enable Bypass (phone runs on cable power)
+#   - Power connected + Battery <= 40% -> Resume Charging (charges back up to 80%)
+#   - Power disconnected               -> Restore stock charging node
 # ==============================================================================
 
 CONFIG_DIR="/data/adb/op8t_bypass_guard"
@@ -20,7 +24,6 @@ STATE_FILE="$CONFIG_DIR/state"
 
 MMI_NODE="/sys/class/oplus_chg/battery/mmi_charging_enable"
 CAP_NODE="/sys/class/power_supply/battery/capacity"
-USB_NODE="/sys/class/power_supply/usb/online"
 STATUS_NODE="/sys/class/power_supply/battery/status"
 CURRENT_NODE="/sys/class/power_supply/battery/current_now"
 TEMP_NODE="/sys/class/power_supply/battery/temp"
@@ -31,13 +34,50 @@ LOW_THRESHOLD=40
 CHECK_INTERVAL=10
 NOTIFY_ENABLED=1
 
+mkdir -p "$CONFIG_DIR"
+
+# Ensure single running instance
+for p in $(pgrep -f "op8t_bypass_guard/daemon.sh" 2>/dev/null); do
+    if [ "$p" != "$$" ]; then
+        kill -9 "$p" 2>/dev/null
+    fi
+done
+echo "$$" > "$PID_FILE"
+
 # Load custom config if present
 if [ -f "$CONFIG_FILE" ]; then
     . "$CONFIG_FILE"
 fi
 
-mkdir -p "$CONFIG_DIR"
-echo "$$" > "$PID_FILE"
+is_power_online() {
+    local AC USB PC
+    AC=$(cat /sys/class/power_supply/ac/online 2>/dev/null || echo 0)
+    USB=$(cat /sys/class/power_supply/usb/online 2>/dev/null || echo 0)
+    PC=$(cat /sys/class/power_supply/pc_port/online 2>/dev/null || echo 0)
+
+    if [ "$AC" = "1" ] || [ "$USB" = "1" ] || [ "$PC" = "1" ]; then
+        echo "1"
+    else
+        echo "0"
+    fi
+}
+
+get_power_source_name() {
+    local AC USB PC
+    AC=$(cat /sys/class/power_supply/ac/online 2>/dev/null || echo 0)
+    USB=$(cat /sys/class/power_supply/usb/online 2>/dev/null || echo 0)
+    PC=$(cat /sys/class/power_supply/pc_port/online 2>/dev/null || echo 0)
+
+    if [ "$AC" = "1" ]; then
+        echo "AC Adapter / Charger"
+    elif [ "$USB" = "1" ]; then
+        echo "USB Cable"
+    elif [ "$PC" = "1" ]; then
+        echo "PC Port"
+    else
+        echo "Battery"
+    fi
+}
 
 log() {
     local MSG="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -54,6 +94,10 @@ notify() {
     local TEXT="$2"
     log "NOTIFICATION: $TITLE - $TEXT"
     if [ "$NOTIFY_ENABLED" -eq 1 ]; then
+        # Post via UID 2000 (shell) because Android 14+ drops UID 0 (root) notifications
+        # with PackageManager$NameNotFoundException: root
+        su 2000 -c "cmd notification post -i @android:drawable/stat_sys_battery_charge -S bigtext -t '$TITLE' OP8T_BYPASS_GUARD '$TEXT'" >/dev/null 2>&1 || \
+        su shell -c "cmd notification post -i @android:drawable/stat_sys_battery_charge -S bigtext -t '$TITLE' OP8T_BYPASS_GUARD '$TEXT'" >/dev/null 2>&1 || \
         cmd notification post -S bigtext -t "$TITLE" OP8T_BYPASS_GUARD "$TEXT" >/dev/null 2>&1
     fi
 }
@@ -64,7 +108,9 @@ cleanup() {
         echo 1 > "$MMI_NODE"
     fi
     echo "STOPPED" > "$STATE_FILE"
-    rm -f "$PID_FILE"
+    if [ "$(cat "$PID_FILE" 2>/dev/null)" = "$$" ]; then
+        rm -f "$PID_FILE"
+    fi
     notify "🛡️ Bypass Guard Stopped" "Daemon stopped. Normal charging restored."
     exit 0
 }
@@ -84,20 +130,21 @@ log "OnePlus 8T Bypass Charging Guard Daemon Started (PID: $$)"
 log "Target Profile: Bypass at >= ${HIGH_THRESHOLD}%, Resume at <= ${LOW_THRESHOLD}%"
 log "=========================================================="
 
-LAST_USB=$(cat "$USB_NODE" 2>/dev/null || echo 0)
+LAST_POWER=$(is_power_online)
 CURRENT_CAP=$(cat "$CAP_NODE" 2>/dev/null || echo 50)
 CURRENT_MODE="UNKNOWN"
 
 # Determine initial state on daemon launch
-if [ "$LAST_USB" = "1" ]; then
+if [ "$LAST_POWER" = "1" ]; then
+    PWR_SRC=$(get_power_source_name)
     if [ "$CURRENT_CAP" -ge "$HIGH_THRESHOLD" ]; then
         echo 0 > "$MMI_NODE"
         CURRENT_MODE="BYPASS"
-        notify "⚡ Bypass Guard Active" "Battery at ${CURRENT_CAP}%. Bypass engaged (powered directly from USB cable)."
+        notify "⚡ Bypass Guard Active" "Battery at ${CURRENT_CAP}% (>= ${HIGH_THRESHOLD}%). Connected to $PWR_SRC. Bypass engaged (drawing cable power)."
     else
         echo 1 > "$MMI_NODE"
         CURRENT_MODE="CHARGING"
-        notify "🔋 Bypass Guard Active" "Battery at ${CURRENT_CAP}%. Charging towards ${HIGH_THRESHOLD}%."
+        notify "🔋 Bypass Guard Active" "Battery at ${CURRENT_CAP}%. Charging via $PWR_SRC towards ${HIGH_THRESHOLD}%."
     fi
 else
     echo 1 > "$MMI_NODE"
@@ -115,36 +162,37 @@ while true; do
         . "$CONFIG_FILE"
     fi
 
-    USB=$(cat "$USB_NODE" 2>/dev/null || echo 0)
+    POWER=$(is_power_online)
     CAP=$(cat "$CAP_NODE" 2>/dev/null || echo 50)
     NODE_VAL=$(cat "$MMI_NODE" 2>/dev/null || echo 1)
 
-    # 1. Handle Cable Disconnection / Connection Events
-    if [ "$USB" != "$LAST_USB" ]; then
-        if [ "$USB" = "1" ]; then
-            log "Cable plugged in (Battery: ${CAP}%)"
+    # 1. Handle Plug / Unplug Events
+    if [ "$POWER" != "$LAST_POWER" ]; then
+        if [ "$POWER" = "1" ]; then
+            PWR_SRC=$(get_power_source_name)
+            log "Power connected via $PWR_SRC (Battery: ${CAP}%)"
             if [ "$CAP" -ge "$HIGH_THRESHOLD" ]; then
                 echo 0 > "$MMI_NODE"
                 CURRENT_MODE="BYPASS"
-                notify "🔌 USB Connected (${CAP}%)" "Bypass mode active. Powered directly from USB."
+                notify "🔌 Connected: $PWR_SRC (${CAP}%)" "Bypass mode active. Powered directly from cable."
             else
                 echo 1 > "$MMI_NODE"
                 CURRENT_MODE="CHARGING"
-                notify "🔌 USB Connected (${CAP}%)" "Charging battery towards ${HIGH_THRESHOLD}%."
+                notify "🔌 Connected: $PWR_SRC (${CAP}%)" "Charging battery towards ${HIGH_THRESHOLD}%."
             fi
         else
-            log "Cable unplugged (Battery: ${CAP}%)"
+            log "Power disconnected (Battery: ${CAP}%)"
             echo 1 > "$MMI_NODE"
             CURRENT_MODE="UNPLUGGED"
-            notify "🔌 USB Disconnected (${CAP}%)" "Running on battery power."
+            notify "🔌 Charger Disconnected (${CAP}%)" "Running on battery power."
         fi
-        LAST_USB="$USB"
+        LAST_POWER="$POWER"
         echo "$CURRENT_MODE" > "$STATE_FILE"
         continue
     fi
 
-    # 2. Cable Connected - Manage Smart Charge / Bypass Cycle
-    if [ "$USB" = "1" ]; then
+    # 2. Power Connected - Manage Smart Charge / Bypass Cycle
+    if [ "$POWER" = "1" ]; then
         if [ "$CURRENT_MODE" = "CHARGING" ]; then
             if [ "$CAP" -ge "$HIGH_THRESHOLD" ]; then
                 log "Battery reached ${CAP}% (>= ${HIGH_THRESHOLD}%). Switching to BYPASS mode."
@@ -180,4 +228,3 @@ while true; do
         fi
     fi
 done
-
