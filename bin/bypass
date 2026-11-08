@@ -1,0 +1,193 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ==============================================================================
+# OnePlus 8T Bypass Charging Guard - CLI Controller
+# Works in Termux, ADB Shell, or native Android Root Shell
+# ==============================================================================
+
+DAEMON_DIR="/data/adb/op8t_bypass_guard"
+DAEMON_SCRIPT="$DAEMON_DIR/daemon.sh"
+PID_FILE="$DAEMON_DIR/daemon.pid"
+STATE_FILE="$DAEMON_DIR/state"
+LOG_FILE="$DAEMON_DIR/daemon.log"
+CONFIG_FILE="$DAEMON_DIR/config.env"
+MMI_NODE="/sys/class/oplus_chg/battery/mmi_charging_enable"
+
+# Helper to run commands as root
+run_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        sh -c "$@"
+    else
+        su -c "$@"
+    fi
+}
+
+check_daemon_running() {
+    local PID
+    PID=$(run_root "cat '$PID_FILE' 2>/dev/null")
+    if [ -n "$PID" ] && run_root "kill -0 $PID 2>/dev/null"; then
+        echo "$PID"
+    else
+        echo ""
+    fi
+}
+
+case "$1" in
+    start)
+        PID=$(check_daemon_running)
+        if [ -n "$PID" ]; then
+            echo "[!] Daemon is already running (PID: $PID)."
+            exit 0
+        fi
+        echo "[+] Starting OnePlus 8T Bypass Charging Guard daemon..."
+        run_root "mkdir -p '$DAEMON_DIR'"
+        run_root "nohup /system/bin/sh '$DAEMON_SCRIPT' >/dev/null 2>&1 &"
+        sleep 1
+        NEW_PID=$(check_daemon_running)
+        if [ -n "$NEW_PID" ]; then
+            echo "[✔] Daemon started successfully! (PID: $NEW_PID)"
+            echo "    Monitoring battery loop: Stop @ 80% (Bypass) -> Resume @ 40%."
+        else
+            echo "[✘] Failed to start daemon. Check logs with: bypass log"
+        fi
+        ;;
+
+    stop)
+        PID=$(check_daemon_running)
+        if [ -z "$PID" ]; then
+            echo "[!] Daemon is not currently running."
+        else
+            echo "[-] Stopping daemon (PID: $PID)..."
+            run_root "kill -TERM $PID 2>/dev/null"
+            sleep 1
+        fi
+        # Failsafe: Ensure normal charging is restored
+        run_root "echo 1 > $MMI_NODE"
+        run_root "rm -f '$PID_FILE'"
+        run_root "echo 'STOPPED' > '$STATE_FILE'"
+        echo "[✔] Daemon stopped. Normal charging restored!"
+        ;;
+
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+
+    on)
+        echo "[+] Manually forcing Pass-through / Bypass Charging..."
+        run_root "echo 0 > $MMI_NODE"
+        run_root "echo 'BYPASS' > '$STATE_FILE'"
+        echo "[✔] Bypass mode ENGAGED!"
+        echo "    Phone is now drawing operating current from the USB cable."
+        echo "    Battery charging is paused."
+        ;;
+
+    off)
+        echo "[-] Manually restoring normal battery charging..."
+        run_root "echo 1 > $MMI_NODE"
+        run_root "echo 'CHARGING' > '$STATE_FILE'"
+        echo "[✔] Normal charging RESTORED!"
+        ;;
+
+    set)
+        HIGH="$2"
+        LOW="$3"
+        if [ -z "$HIGH" ] || [ -z "$LOW" ]; then
+            echo "Usage: bypass set <high_limit> <low_limit>"
+            echo "Example: bypass set 80 40  (Bypass at 80%, Resume at 40%)"
+            exit 1
+        fi
+        if ! [ "$HIGH" -gt "$LOW" ] 2>/dev/null || [ "$HIGH" -gt 100 ] || [ "$LOW" -lt 5 ]; then
+            echo "[✘] Error: Invalid limits. high must be > low, high <= 100, low >= 5."
+            exit 1
+        fi
+        run_root "mkdir -p '$DAEMON_DIR'"
+        run_root "cat << 'EOF' > '$CONFIG_FILE'
+HIGH_THRESHOLD=$HIGH
+LOW_THRESHOLD=$LOW
+CHECK_INTERVAL=10
+NOTIFY_ENABLED=1
+EOF"
+        echo "[✔] Configuration updated:"
+        echo "    Stop charging & bypass at : ${HIGH}%"
+        echo "    Resume charging at        : ${LOW}%"
+        echo "    Daemon will apply changes on next cycle (within 10s)."
+        ;;
+
+    log)
+        echo "=== OnePlus 8T Bypass Guard Log (Recent) ==="
+        run_root "tail -n 25 '$LOG_FILE' 2>/dev/null || echo 'No log entries found.'"
+        echo "============================================"
+        ;;
+
+    status|"")
+        PID=$(check_daemon_running)
+        MMI_VAL=$(run_root "cat $MMI_NODE 2>/dev/null")
+        STATUS=$(run_root "cat /sys/class/power_supply/battery/status 2>/dev/null")
+        CURRENT=$(run_root "cat /sys/class/power_supply/battery/current_now 2>/dev/null")
+        VOLT=$(run_root "cat /sys/class/power_supply/battery/voltage_now 2>/dev/null")
+        LEVEL=$(run_root "cat /sys/class/power_supply/battery/capacity 2>/dev/null")
+        USB=$(run_root "cat /sys/class/power_supply/usb/online 2>/dev/null")
+        TEMP_RAW=$(run_root "cat /sys/class/power_supply/battery/temp 2>/dev/null")
+        STATE=$(run_root "cat '$STATE_FILE' 2>/dev/null || echo 'UNKNOWN'")
+
+        # Load thresholds
+        HIGH_THRESHOLD=80
+        LOW_THRESHOLD=40
+        if [ -f "$CONFIG_FILE" ]; then
+            eval "$(run_root "cat '$CONFIG_FILE' 2>/dev/null")"
+        fi
+
+        # Convert units
+        CURRENT_MA=$((CURRENT / 1000))
+        VOLT_V=$(awk "BEGIN {printf \"%.2f\", $VOLT / 1000000}" 2>/dev/null || echo "$((VOLT / 1000)) mV")
+        TEMP_C=$(awk "BEGIN {printf \"%.1f\", $TEMP_RAW / 10}" 2>/dev/null || echo "$((TEMP_RAW / 10))")
+
+        echo "=================================================="
+        echo "       OnePlus 8T Smart Bypass Charging Guard     "
+        echo "=================================================="
+        if [ -n "$PID" ]; then
+            echo " Daemon Status      : [● RUNNING] (PID: $PID)"
+        else
+            echo " Daemon Status      : [○ STOPPED]"
+        fi
+
+        if [ "$MMI_VAL" = "0" ]; then
+            echo " Power Source       : DIRECT USB CABLE (Bypass Active)"
+            echo " Battery Charging   : PAUSED (0 mA Flow)"
+        else
+            echo " Power Source       : Normal Battery Charging"
+            echo " Battery Charging   : ACTIVE / STANDBY"
+        fi
+
+        echo " State Tracker      : $STATE"
+        echo " Auto Loop Target   : Bypass >= ${HIGH_THRESHOLD}%  |  Recharge <= ${LOW_THRESHOLD}%"
+        echo "--------------------------------------------------"
+        echo " Battery Level      : ${LEVEL}%"
+        echo " Battery Status     : ${STATUS}"
+        echo " USB Connected      : $([ "$USB" = "1" ] && echo 'Yes' || echo 'No')"
+        echo " Battery Current    : ${CURRENT_MA} mA (${CURRENT} µA)"
+        echo " Battery Voltage    : ${VOLT_V} V"
+        echo " Battery Temp       : ${TEMP_C} °C"
+        echo "=================================================="
+        echo "Commands:"
+        echo "  bypass start      -> Start the automated 80%/40% guard"
+        echo "  bypass stop       -> Stop daemon & resume normal charging"
+        echo "  bypass restart    -> Restart the guard daemon"
+        echo "  bypass on         -> Manually force bypass mode on"
+        echo "  bypass off        -> Manually restore normal charging"
+        echo "  bypass set <H> <L>-> Change thresholds (e.g., bypass set 80 40)"
+        echo "  bypass log        -> View recent daemon log activity"
+        echo "=================================================="
+        ;;
+
+    help|--help|-h)
+        echo "Usage: bypass [start|stop|restart|status|on|off|set|log]"
+        ;;
+
+    *)
+        echo "Unknown command: $1"
+        echo "Run 'bypass help' for available options."
+        exit 1
+        ;;
+esac
