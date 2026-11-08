@@ -80,6 +80,15 @@ When `0` is written to this node:
 
 Writing `1` removes the disable vote, instantly resuming full fast-charging.
 
+### 4. Live Verification & Proof
+
+<p align="center">
+  <img src="docs/assets/proof_bypass_active.png" alt="OnePlus 8T Bypass Charging Active Proof" width="320" />
+  <br>
+  <em><b>Live Hardware Verification on OnePlus 8T (Lunaris AOSP / Android 16):</b><br>
+  The USB cable is plugged in (note the lightning bolt indicator in the status bar), but the battery settings state explicitly confirms <b>"Not charging"</b> at 93%. The device is operating 100% on USB cable power (bypass mode) with battery current halted.</em>
+</p>
+
 ---
 
 ## ⚡ The Smart 80% / 40% Cycle Daemon
