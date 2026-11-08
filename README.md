@@ -119,20 +119,23 @@ Rather than leaving the battery pinned permanently at 80% (which can cause micro
 ### Native Android Notifications
 Whenever a state transition occurs (80% bypass engaged, 40% charging resumed, cable connected/disconnected), the daemon triggers Android's native Notification Manager:
 ```bash
-cmd notification post -S bigtext -t "TITLE" OP8T_BYPASS_GUARD "TEXT"
+su 2000 -c "cmd notification post -i @android:drawable/stat_sys_battery_charge -S bigtext -t 'TITLE' OP8T_BYPASS_GUARD 'TEXT'"
 ```
-No third-party apps or Termux:API packages required—all alerts appear directly in the Android system notification drawer.
+> [!NOTE]
+> On Android 14+ / 16 (AOSP), notifications posted directly from root (`UID 0`) are silently rejected by `NotificationManagerService` because `"root"` is not an installed package (`PackageManager$NameNotFoundException: root`). The daemon automatically routes notifications through `UID 2000` (`com.android.shell`), ensuring high-priority alerting notifications with the native battery icon appear smoothly in your notification drawer without requiring third-party apps or Termux:API.
 
 ---
 
 ## 🚀 Features
 
 - **True Hardware Pass-Through:** Device runs purely on cable power; battery current drops to ~0 mA.
+- **Universal Charger Support:** Works with original OnePlus Warp/Dash 65W chargers, USB-PD fast adapters, standard USB ports, and PC ports (monitors `/sys/class/power_supply/ac/online`, `usb/online`, and `pc_port/online`).
 - **Smart 80% / 40% Loop:** Automatically charges to 80%, engages bypass, and re-engages charging when dropping to 40%.
 - **Customizable Thresholds:** Easily adjust high/low thresholds via `bypass set <high> <low>`.
+- **Reliable Native Notifications:** Alerting notifications with battery icon posted natively via system shell channel (`com.android.shell`).
 - **Reboot Persistence:** Automatically starts at boot via KernelSU `/data/adb/service.d/`.
 - **Failsafe Design:** If the daemon process is terminated, normal charging is automatically restored. Cable disconnects automatically reset the hardware registers.
-- **Full CLI Suite:** Simple commands in Termux (`bypass status`, `bypass on`, `bypass off`, `bypass log`, etc.).
+- **Full CLI Suite:** Simple commands in Termux (`bypass status`, `bypass on`, `bypass off`, `bypass test-notify`, `bypass log`, etc.).
 
 ---
 
@@ -191,18 +194,18 @@ bypass
 ==================================================
        OnePlus 8T Smart Bypass Charging Guard     
 ==================================================
- Daemon Status      : [● RUNNING] (PID: 14160)
+ Daemon Status      : [● RUNNING] (PID: 9124)
  Power Source       : DIRECT USB CABLE (Bypass Active)
  Battery Charging   : PAUSED (0 mA Flow)
  State Tracker      : BYPASS
  Auto Loop Target   : Bypass >= 80%  |  Recharge <= 40%
 --------------------------------------------------
- Battery Level      : 94%
+ Battery Level      : 96%
  Battery Status     : Discharging
- USB Connected      : Yes
- Battery Current    : 0 mA (35 µA)
- Battery Voltage    : 4.25 V
- Battery Temp       : 38.7 °C
+ Power Source       : Connected (AC Adapter / Fast Charger)
+ Battery Current    : 0 mA (0 µA)
+ Battery Voltage    : 4.31 V
+ Battery Temp       : 37.2 °C
 ==================================================
 ```
 
@@ -221,12 +224,13 @@ bypass on
 bypass off
 ```
 
-### Service Controls
+### Service & Test Controls
 ```bash
-bypass stop       # Stop automated daemon & restore normal charging
-bypass start      # Start automated daemon
-bypass restart    # Restart daemon
-bypass log        # View recent daemon logs
+bypass test-notify # Send a test notification to verify display
+bypass stop        # Stop automated daemon & restore normal charging
+bypass start       # Start automated daemon
+bypass restart     # Restart daemon
+bypass log         # View recent daemon logs
 ```
 
 ---
