@@ -19,3 +19,4 @@ DAEMON_SCRIPT="/data/adb/op8t_bypass_guard/daemon.sh"
 if [ -f "$DAEMON_SCRIPT" ]; then
     nohup /system/bin/sh "$DAEMON_SCRIPT" >/dev/null 2>&1 &
 fi
+

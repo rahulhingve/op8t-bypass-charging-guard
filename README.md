@@ -150,7 +150,7 @@ op8t-bypass-charging-guard/
 ### Method 1: 1-Click Install from PC (via ADB)
 Connect your rooted OnePlus 8T to your PC via USB with USB Debugging enabled:
 ```bash
-git clone https://github.com/<your-username>/op8t-bypass-charging-guard.git
+git clone https://github.com/rahulhingve/op8t-bypass-charging-guard.git
 cd op8t-bypass-charging-guard
 chmod +x install.sh
 ./install.sh
@@ -159,7 +159,7 @@ chmod +x install.sh
 ### Method 2: On-Device via Termux
 Open Termux on your OnePlus 8T:
 ```bash
-git clone https://github.com/<your-username>/op8t-bypass-charging-guard.git
+git clone https://github.com/rahulhingve/op8t-bypass-charging-guard.git
 cd op8t-bypass-charging-guard
 chmod +x install.sh
 su -c "./install.sh"
@@ -239,3 +239,4 @@ su -c "rm -f /data/adb/service.d/op8t_bypass_guard.sh && rm -rf /data/adb/op8t_b
 
 This repository is licensed under the [MIT License](LICENSE).
 Feel free to study, modify, and build upon this research.
+

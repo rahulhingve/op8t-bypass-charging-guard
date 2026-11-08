@@ -55,3 +55,4 @@ fi
 
 echo "[✔] OnePlus 8T Bypass Guard has been cleanly uninstalled."
 echo "    Normal battery charging restored."
+
